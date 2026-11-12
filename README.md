@@ -1,23 +1,42 @@
-## Splunk Brute-Force Detection Demo
+# Brute-Force Login Detection
 
-I used Splunk Cloud to reproduce the rule from my Python detector: flag a source IP when it reaches five failed logins within a rolling two-minute window.
+I built this project to see if I could spot a burst of failed logins in SSH logs and trace an alert back to the events that triggered it. The Python script flags an IP when it reaches five failed logins within two minutes. It saves the alert and the matching log entries in SQLite so I can review them in a local dashboard.
 
-### Dashboard results
+I tested the detector on a Raspberry Pi using controlled SSH login attempts. I also tried the same rule in Splunk Cloud with the synthetic logs included in this repo.
 
-The sample contains eight login events: six failed logins and two successful logins. Splunk flagged `192.168.1.50` after five failures in 80 seconds, matching the Python detector on the same sample.
+## Run it locally
+
+You’ll need Python 3.11 or newer. There’s nothing extra to install. From the repo folder, run:
+
+```bash
+python3 -m unittest -v testDetector
+python3 main.py
+python3 dashboard.py
+```
+
+The first command runs the tests. The second processes the sample logs and should print one alert: `192.168.1.50` had five failed logins in 80 seconds.
+
+Once the dashboard starts, open [http://127.0.0.1:8000](http://127.0.0.1:8000). Click **View evidence** to see the log entries that triggered the alert. Press **Ctrl+C** in the terminal when you’re done.
+
+## How it works
+
+`parser.py` reads and validates the logs. `detector.py` counts recent failures by IP and uses a five-minute cooldown so the same IP doesn’t keep triggering alerts. `alerts.py` saves the results to SQLite, and `dashboard.py` displays them.
+
+I also wrote `simulate_logs.py` to generate test data and `import_ssh_logs.py` to convert SSH journal entries into a format the detector can read.
+
+## What I found in Splunk
+
+The sample had eight login events: six failures and two successes. Five of those failures came from `192.168.1.50` within 80 seconds, so Splunk flagged the same IP as my Python script.
 
 ![Splunk dashboard showing the brute-force match and overall login counts](splunk-dashboard.png)
 
-### Investigation
-
-I searched all login events from the flagged IP and sorted them by time. The timeline showed five failed attempts against `admin` and no successful logins from that IP in the sample.
+I then pulled up all the login events from that IP and put them in time order. All five attempts targeted `admin`, and none succeeded in the sample.
 
 ![Splunk investigation timeline showing five failed attempts against admin](splunk-investigation.png)
 
-### Reproduce the detection
+### Try the Splunk search
 
-1. Upload `sample_logs/auth.jsonl` to Splunk using the `_json` source type.
-2. Open **Search & Reporting**, set the time range to **All time**, and run:
+Upload `sample_logs/auth.jsonl` using the `_json` source type. In **Search & Reporting**, set the time range to **All time** and run:
 
 ```spl
 source="auth.jsonl" event="login_failed"
@@ -28,6 +47,6 @@ source="auth.jsonl" event="login_failed"
 | table source_ip failures elapsed_seconds
 ```
 
-Expected result: one match for `192.168.1.50`, with `failures=5` and `elapsed_seconds=80`.
+You should get one row: `192.168.1.50`, five failures, 80 seconds.
 
-I also tested the time limit by doubling the gaps between events in the search. The five failures then spanned 160 seconds, and Splunk returned no match.
+I also doubled the gaps between the attempts in a test search. The same five failures then took 160 seconds, so the search returned no match. That let me check that the rule was using the two-minute window, rather than just counting five failures.
